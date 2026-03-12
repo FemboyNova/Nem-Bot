@@ -1,0 +1,23 @@
+services:
+  nemesis-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nemesis-bot:latest
+    container_name: nemesis-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - match-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Graceful shutdown timeout (seconds)
+    stop_grace_period: 10s
+
+volumes:
+  match-data:
+    name: nemesis-bot-data

@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Environment files (injected at runtime, never baked into image)
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Data (persisted via Docker volume)
+data/
+
+# Documentation
+*.md
+LICENSE
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Docker (prevent recursive context)
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
