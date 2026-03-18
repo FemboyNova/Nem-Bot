@@ -476,10 +476,6 @@ async function handleAnnounceButton(interaction) {
         return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
     }
 
-    if (match.announced) {
-        return interaction.reply({ content: '❌ This match has already been announced.', ephemeral: true });
-    }
-
     const originalMessageId = interaction.message.id;
     const confirmRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -507,10 +503,6 @@ async function handleAnnounceConfirm(interaction) {
 
     if (!match) {
         return interaction.update({ content: '❌ Match not found.', components: [] });
-    }
-
-    if (match.announced || match.isAnnouncing) {
-        return interaction.update({ content: '❌ This match is already being announced or has been announced.', components: [] });
     }
 
     try {

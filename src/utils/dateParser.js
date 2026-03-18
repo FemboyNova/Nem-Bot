@@ -150,18 +150,18 @@ function getUKDate(date = new Date()) {
 
 /**
  * Create a Date object for a specific UK time
- * Handles timezone offset calculation to return correct UTC time
+ * Interprets input as UK wall-clock time and converts to UTC
  * 
  * @param {number} year
  * @param {number} month - 1-indexed (1 = January)
  * @param {number} day
- * @param {number} hours - 24-hour format
+ * @param {number} hours - 24-hour format (UK time)
  * @param {number} minutes
- * @param {number} [timezoneOffset=0] - Offset in hours from UTC (e.g., 1 for CET)
+ * @param {number} [tzOffsetHours=0] - Timezone offset from UTC for input (e.g., 1 for CET)
  * @returns {Date}
  */
-function createUKDate(year, month, day, hours, minutes, timezoneOffset = 0) {
-    const utcTime = Date.UTC(year, month - 1, day, hours - timezoneOffset, minutes, 0);
+function createUKDate(year, month, day, hours, minutes, tzOffsetHours = 0) {
+    const utcTime = Date.UTC(year, month - 1, day, hours - tzOffsetHours, minutes, 0);
     return new Date(utcTime);
 }
 

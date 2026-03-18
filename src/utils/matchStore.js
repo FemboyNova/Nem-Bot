@@ -210,6 +210,7 @@ function addMatch(matchData) {
             id: generateId(matches),
             ...matchData,
             announced: false,
+            isAnnouncing: false,
             mapVetoPrompted: false,
             createdAt: new Date().toISOString(),
         };

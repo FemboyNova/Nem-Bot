@@ -43,6 +43,7 @@ function buildManageEmbed(match, gameConfig) {
     // Status indicators
     const eventStatus = match.eventCreated ? '✅' : '⬜';
     const announceStatus = match.announced ? '✅' : '⬜';
+    const mapVetoStatus = (match.mapVeto && match.mapVeto.length > 0) ? '✅' : '⬜';
     
     // Build description
     let description = `<t:${timestamp}:F> (<t:${timestamp}:R>)\n\n`;
@@ -74,7 +75,8 @@ function buildManageEmbed(match, gameConfig) {
     }
     
     // Status line and ID
-    description += `\n${eventStatus} Event  ${announceStatus} Announced\n`;
+    const mapVetoStatusText = gameConfig.hasMapVeto ? `  ${mapVetoStatus} Map Veto` : '';
+    description += `\n${eventStatus} Event  ${announceStatus} Announced${mapVetoStatusText}\n`;
     description += `**ID:** ${match.id}`;
     
     return new EmbedBuilder()
@@ -109,7 +111,7 @@ function buildManageButtons(match, gameConfig) {
             .setLabel('Announce')
             .setStyle(ButtonStyle.Success)
             .setEmoji('📢')
-            .setDisabled(isAnnounced),
+            .setDisabled(match.isAnnouncing === true),
     );
 
     // Row 2: Edit buttons - Time, Format, Stream
