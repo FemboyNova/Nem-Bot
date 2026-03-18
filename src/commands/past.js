@@ -98,7 +98,7 @@ function buildPastEmbed(matches, page, gameFilter = null) {
  * @returns {ActionRowBuilder}
  */
 function buildPastPaginationButtons(page, totalPages, gameFilter = null) {
-    const filterSuffix = gameFilter ? `_${gameFilter}` : '';
+    const filterSuffix = gameFilter ? `::${gameFilter}` : '';
     
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()

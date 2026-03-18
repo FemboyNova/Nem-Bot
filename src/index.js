@@ -44,6 +44,10 @@ const ALLOWED_ROLES = process.env.ALLOWED_ROLES
     ? process.env.ALLOWED_ROLES.split(',').map(id => id.trim())
     : [];
 
+// Store interval references for graceful shutdown
+let schedulerInterval = null;
+let cleanupInterval = null;
+
 // ============================================================================
 // COMMAND LOADING
 // ============================================================================
@@ -70,13 +74,25 @@ if (fs.existsSync(commandsPath)) {
 // ============================================================================
 
 client.once(Events.ClientReady, (c) => {
-    console.log(`✓ Bot is online as ${c.user.tag}`);
-    console.log(`✓ Serving ${c.guilds.cache.size} server(s)`);
+    console.log(`Bot is online as ${c.user.tag}`);
+    console.log(`Serving ${c.guilds.cache.size} server(s)`);
+
+    // Clean up any stale lock files from a previous crash
+    matchStore.cleanupStaleLock();
 
     startMatchScheduler();
-    console.log(`✓ Match scheduler started (checking every 30 seconds)`);
+    console.log(`Match scheduler started (checking every 30 seconds)`);
 
+    // Run cleanup immediately, then every 24 hours
     matchStore.cleanupOldMatches();
+    cleanupInterval = setInterval(() => {
+        try {
+            matchStore.cleanupOldMatches();
+        } catch (error) {
+            console.error('Periodic cleanup error:', error);
+        }
+    }, 24 * 60 * 60 * 1000);
+    console.log(`Match cleanup scheduled (every 24 hours)`);
 });
 
 // ============================================================================
@@ -84,7 +100,7 @@ client.once(Events.ClientReady, (c) => {
 // ============================================================================
 
 function startMatchScheduler() {
-    setInterval(async () => {
+    schedulerInterval = setInterval(async () => {
         try {
             await checkForAnnouncements();
             await checkForMapVetoPrompts();
@@ -95,8 +111,12 @@ function startMatchScheduler() {
 
     // Run immediately on startup (after 5s delay)
     setTimeout(async () => {
-        await checkForAnnouncements();
-        await checkForMapVetoPrompts();
+        try {
+            await checkForAnnouncements();
+            await checkForMapVetoPrompts();
+        } catch (error) {
+            console.error('Initial scheduler error:', error);
+        }
     }, 5000);
 }
 
@@ -137,10 +157,17 @@ async function checkForAnnouncements() {
                 match.mapVeto
             );
 
+            matchStore.updateMatch(match.id, { isAnnouncing: true });
             await announceChannel.send(announcement);
-            matchStore.updateMatch(match.id, { announced: true });
-            console.log(`📢 Posted announcement for: ${match.matchTitle}`);
+            const result = matchStore.updateMatch(match.id, { announced: true, isAnnouncing: false });
+            
+            if (!result) {
+                console.error(`Failed to mark match ${match.id} as announced after sending`);
+            } else {
+                console.log(`📢 Posted announcement for: ${match.matchTitle}`);
+            }
         } catch (error) {
+            matchStore.updateMatch(match.id, { isAnnouncing: false });
             console.error(`Error announcing match ${match.id}:`, error);
         }
     }
@@ -172,7 +199,12 @@ async function checkForMapVetoPrompts() {
             }
 
             const startTimestamp = Math.floor(new Date(match.startTime).getTime() / 1000);
+            const mapVetoPingUsers = process.env.MAP_VETO_PING_USERS || '';
+            const pingContent = mapVetoPingUsers 
+                ? mapVetoPingUsers.split(',').map(id => `<@${id.trim()}>`).join(' ') + '\n\n' 
+                : '';
             const reminder = `⚠️ **Map Veto Reminder!**\n\n` +
+                pingContent +
                 `**${match.matchTitle}** starts <t:${startTimestamp}:R>!\n\n` +
                 `No map veto has been added yet. Click the button below to add it:`;
 
@@ -392,6 +424,11 @@ async function handleCreateEventConfirm(interaction) {
         const { buildEventDescription } = require('./commands/add');
         const { buildManageEmbed, buildManageButtons } = require('./commands/manage');
         const gameConfig = GAME_CONFIGS[match.game];
+        
+        if (!gameConfig) {
+            return interaction.update({ content: '❌ Error: Invalid game configuration.', components: [] });
+        }
+        
         const eventDescription = buildEventDescription(gameConfig, match.bestOfDisplay, match.streamLink, match.infoLink);
         const channelLink = process.env.CHANNEL_LINK || 'https://discord.com';
         const startTime = new Date(match.startTime);
@@ -410,6 +447,10 @@ async function handleCreateEventConfirm(interaction) {
             eventCreated: true,
             scheduledEventId: scheduledEvent.id
         });
+
+        if (!updatedMatch) {
+            return interaction.update({ content: '❌ Match not found.', components: [] });
+        }
 
         // Refresh the manage embed
         const embed = buildManageEmbed(updatedMatch, gameConfig);
@@ -468,14 +509,18 @@ async function handleAnnounceConfirm(interaction) {
         return interaction.update({ content: '❌ Match not found.', components: [] });
     }
 
-    if (match.announced) {
-        return interaction.update({ content: '❌ This match has already been announced.', components: [] });
+    if (match.announced || match.isAnnouncing) {
+        return interaction.update({ content: '❌ This match is already being announced or has been announced.', components: [] });
     }
 
     try {
         const { buildAnnouncement } = require('./commands/add');
         const { buildManageEmbed, buildManageButtons } = require('./commands/manage');
         const gameConfig = GAME_CONFIGS[match.game];
+
+        if (!gameConfig) {
+            return interaction.update({ content: '❌ Error: Invalid game configuration.', components: [] });
+        }
 
         const announceChannelId = process.env.ANNOUNCE_CHANNEL_ID;
         if (!announceChannelId) {
@@ -498,8 +543,14 @@ async function handleAnnounceConfirm(interaction) {
             match.mapVeto
         );
 
+        matchStore.updateMatch(matchId, { isAnnouncing: true });
         await announceChannel.send(announcement);
-        const updatedMatch = matchStore.updateMatch(matchId, { announced: true });
+        const updatedMatch = matchStore.updateMatch(matchId, { announced: true, isAnnouncing: false });
+
+        if (!updatedMatch) {
+            console.error(`Failed to mark match ${matchId} as announced after sending`);
+            return interaction.update({ content: '❌ Announcement sent but failed to update match status.', components: [] });
+        }
 
         // Refresh the manage embed
         const embed = buildManageEmbed(updatedMatch, gameConfig);
@@ -510,6 +561,7 @@ async function handleAnnounceConfirm(interaction) {
         await interaction.update({ content: '✅ Announced!', components: [] });
         console.log(`📢 Manually announced: ${match.matchTitle}`);
     } catch (error) {
+        matchStore.updateMatch(matchId, { isAnnouncing: false });
         console.error('Error announcing:', error);
         await interaction.update({ content: `❌ Error announcing: ${error.message}`, components: [] });
     }
@@ -730,9 +782,10 @@ async function handleUpcomingPagination(interaction) {
     const { customId } = interaction;
     const isNext = customId.startsWith('upcoming_next_');
     const prefix = isNext ? 'upcoming_next_' : 'upcoming_prev_';
-    const parts = customId.replace(prefix, '').split('_');
-    const currentPage = parseInt(parts[0], 10);
-    const gameFilter = parts[1] || null;
+    const afterPrefix = customId.replace(prefix, '');
+    const sepIndex = afterPrefix.indexOf('::');
+    const currentPage = parseInt(sepIndex >= 0 ? afterPrefix.substring(0, sepIndex) : afterPrefix, 10);
+    const gameFilter = sepIndex >= 0 ? afterPrefix.substring(sepIndex + 2) : null;
     const newPage = isNext ? currentPage + 1 : Math.max(0, currentPage - 1);
 
     const { buildUpcomingEmbed, buildPaginationButtons, MATCHES_PER_PAGE } = require('./commands/upcoming');
@@ -752,9 +805,10 @@ async function handlePastPagination(interaction) {
     const { customId } = interaction;
     const isNext = customId.startsWith('past_next_');
     const prefix = isNext ? 'past_next_' : 'past_prev_';
-    const parts = customId.replace(prefix, '').split('_');
-    const currentPage = parseInt(parts[0], 10);
-    const gameFilter = parts[1] || null;
+    const afterPrefix = customId.replace(prefix, '');
+    const sepIndex = afterPrefix.indexOf('::');
+    const currentPage = parseInt(sepIndex >= 0 ? afterPrefix.substring(0, sepIndex) : afterPrefix, 10);
+    const gameFilter = sepIndex >= 0 ? afterPrefix.substring(sepIndex + 2) : null;
     const newPage = isNext ? currentPage + 1 : Math.max(0, currentPage - 1);
 
     const { buildPastEmbed, buildPastPaginationButtons, MATCHES_PER_PAGE } = require('./commands/past');
@@ -824,12 +878,22 @@ async function handleMapVetoModal(interaction) {
     if (map3) mapVeto.push(map3);
 
     const updatedMatch = matchStore.updateMatch(matchId, { mapVeto });
+    
+    if (!updatedMatch) {
+        return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+    }
+    
     const isManageEmbed = interaction.message?.embeds?.length > 0;
 
     if (isManageEmbed) {
         // Refresh the manage embed
         const { buildManageEmbed, buildManageButtons } = require('./commands/manage');
         const gameConfig = GAME_CONFIGS[updatedMatch.game];
+        
+        if (!gameConfig) {
+            return interaction.update({ content: '❌ Error: Invalid game configuration.', components: [] });
+        }
+        
         const embed = buildManageEmbed(updatedMatch, gameConfig);
         const components = buildManageButtons(updatedMatch, gameConfig);
 
@@ -866,7 +930,13 @@ async function handleMapVetoModal(interaction) {
  */
 async function refreshManageEmbed(interaction, updatedMatch) {
     const { buildManageEmbed, buildManageButtons } = require('./commands/manage');
-    const gameConfig = GAME_CONFIGS[updatedMatch.game];
+    const gameConfig = GAME_CONFIGS[updatedMatch?.game];
+    
+    if (!gameConfig) {
+        console.error(`Invalid game config for match: ${updatedMatch?.id}`);
+        return interaction.update({ content: '❌ Error: Invalid game configuration.', components: [] });
+    }
+    
     const embed = buildManageEmbed(updatedMatch, gameConfig);
     const components = buildManageButtons(updatedMatch, gameConfig);
     await interaction.update({ embeds: [embed], components });
@@ -916,6 +986,10 @@ async function handleEditTimeModal(interaction) {
     
     const updatedMatch = matchStore.updateMatch(matchId, { startTime: startTime.toISOString() });
     
+    if (!updatedMatch) {
+        return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+    }
+    
     // Update scheduled event if exists
     await updateScheduledEventAfterEdit(interaction.guild, updatedMatch, {
         scheduledStartTime: startTime,
@@ -960,6 +1034,10 @@ async function handleEditFormatModal(interaction) {
     
     const updatedMatch = matchStore.updateMatch(matchId, { bestOf, bestOfDisplay });
     
+    if (!updatedMatch) {
+        return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+    }
+    
     // Update scheduled event description if exists
     if (match.scheduledEventId) {
         const { buildEventDescription } = require('./commands/add');
@@ -987,6 +1065,10 @@ async function handleEditStreamModal(interaction) {
     }
     
     const updatedMatch = matchStore.updateMatch(matchId, { streamLink });
+    
+    if (!updatedMatch) {
+        return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+    }
     
     // Update scheduled event description if exists
     if (match.scheduledEventId) {
@@ -1019,6 +1101,10 @@ async function handleEditEnemyModal(interaction) {
     
     const updatedMatch = matchStore.updateMatch(matchId, { enemyTeam, matchTitle });
     
+    if (!updatedMatch) {
+        return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+    }
+    
     // Update scheduled event name if exists
     await updateScheduledEventAfterEdit(interaction.guild, updatedMatch, { name: matchTitle });
     
@@ -1050,6 +1136,10 @@ async function handleEditEventModal(interaction) {
     
     const updatedMatch = matchStore.updateMatch(matchId, { eventName, matchTitle });
     
+    if (!updatedMatch) {
+        return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+    }
+    
     // Update scheduled event name if exists
     await updateScheduledEventAfterEdit(interaction.guild, updatedMatch, { name: matchTitle });
     
@@ -1067,6 +1157,10 @@ async function handleEditInfoModal(interaction) {
     const infoLink = interaction.fields.getTextInputValue('info_link').trim() || 'N/A';
     
     const updatedMatch = matchStore.updateMatch(matchId, { infoLink });
+    
+    if (!updatedMatch) {
+        return interaction.reply({ content: '❌ Match not found.', ephemeral: true });
+    }
     
     // Update scheduled event description if exists
     if (match.scheduledEventId) {
@@ -1093,9 +1187,35 @@ client.login(process.env.DISCORD_TOKEN);
 
 function shutdown(signal) {
     console.log(`\n${signal} received. Shutting down gracefully...`);
+    
+    // Clear scheduled intervals
+    if (schedulerInterval) {
+        clearInterval(schedulerInterval);
+        schedulerInterval = null;
+    }
+    if (cleanupInterval) {
+        clearInterval(cleanupInterval);
+        cleanupInterval = null;
+    }
+    
     client.destroy();
     process.exit(0);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// ============================================================================
+// ERROR HANDLERS
+// ============================================================================
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled promise rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught exception:', error);
+    // Give time for the error to be logged, then exit
+    // The container restart policy (docker-compose) will restart the bot
+    setTimeout(() => process.exit(1), 1000);
+});

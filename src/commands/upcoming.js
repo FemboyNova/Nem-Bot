@@ -113,7 +113,7 @@ function buildUpcomingEmbed(matches, page, gameFilter = null) {
  * @returns {ActionRowBuilder}
  */
 function buildPaginationButtons(page, totalPages, gameFilter = null) {
-    const filterSuffix = gameFilter ? `_${gameFilter}` : '';
+    const filterSuffix = gameFilter ? `::${gameFilter}` : '';
     
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()

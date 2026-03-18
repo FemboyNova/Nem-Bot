@@ -24,6 +24,9 @@ const LOCK_FILE = path.join(__dirname, '..', '..', 'data', 'matches.lock');
 const LOCK_TIMEOUT = 5000;      // Max time to wait for lock (ms)
 const LOCK_RETRY_DELAY = 50;    // Delay between lock acquisition attempts (ms)
 
+// Shared buffer for non-blocking sleep (avoids busy-wait spin loops)
+const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+
 // Games that support map veto (used for filtering)
 const GAMES_WITH_MAP_VETO = ['CS2', 'VALORANT', 'VALORANT_MOBILE'];
 
@@ -38,6 +41,25 @@ function ensureDataDir() {
     const dataDir = path.dirname(DATA_FILE);
     if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
+    }
+}
+
+/**
+ * Clean up stale lock file on startup.
+ * If the process crashed while holding the lock, the lock file persists.
+ * This should be called once during bot initialization.
+ */
+function cleanupStaleLock() {
+    try {
+        if (fs.existsSync(LOCK_FILE)) {
+            const lockPid = fs.readFileSync(LOCK_FILE, 'utf8').trim();
+            console.log(`Found stale lock file (PID: ${lockPid}), removing...`);
+            fs.unlinkSync(LOCK_FILE);
+            console.log(`Stale lock removed.`);
+        }
+    } catch (error) {
+        // If we can't read/remove it, try force removing
+        try { fs.unlinkSync(LOCK_FILE); } catch (e) { /* ignore */ }
     }
 }
 
@@ -72,11 +94,8 @@ function acquireLock() {
                     continue;
                 }
                 
-                // Wait and retry
-                const waitUntil = Date.now() + LOCK_RETRY_DELAY;
-                while (Date.now() < waitUntil) {
-                    // Busy wait (synchronous delay)
-                }
+                // Wait and retry (non-blocking sleep using Atomics.wait)
+                Atomics.wait(SLEEP_BUFFER, 0, 0, LOCK_RETRY_DELAY);
             } else {
                 throw error;
             }
@@ -307,7 +326,7 @@ function getMatchesNeedingAnnouncement() {
     return withLock(() => {
         const matches = loadMatchesInternal();
         const now = new Date();
-        return matches.filter(m => !m.announced && new Date(m.startTime) <= now);
+        return matches.filter(m => !m.announced && !m.isAnnouncing && new Date(m.startTime) <= now);
     });
 }
 
@@ -387,4 +406,5 @@ module.exports = {
     
     // Maintenance
     cleanupOldMatches,
+    cleanupStaleLock,
 };
